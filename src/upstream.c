@@ -44,13 +44,45 @@ proxy_type_name(proxy_type type)
 }
 
 /**
+ * Parse and process a netmask format (IP/mask), otherwise treat as a domain
+ */
+static int upstream_handle_site_spec(struct upstream *up, const char *domain)
+{
+        char *ptr;
+
+        ptr = strchr (domain, '/');
+        if (ptr) {
+                struct in_addr addrstruct;
+
+                *ptr = '\0';
+                if (inet_aton (domain, &addrstruct) != 0) {
+                        up->ip = ntohl (addrstruct.s_addr);
+                        *ptr++ = '/';
+
+                        if (strchr (ptr, '.')) {
+                                if (inet_aton (ptr, &addrstruct) != 0)
+                                        up->mask =
+                                            ntohl (addrstruct.s_addr);
+                                else return 0;
+                        } else {
+                                up->mask =
+                                    ~((1 << (32 - atoi (ptr))) - 1);
+                        }
+                } else {
+                    return 0;
+                }
+        } else {
+                up->domain = safestrdup (domain);
+        }
+        return 1;
+}
+/**
  * Construct an upstream struct from input data.
  */
 static struct upstream *upstream_build (const char *host, int port, const char *domain,
                         const char *user, const char *pass,
 			proxy_type type)
 {
-        char *ptr;
         struct upstream *up;
 
         up = (struct upstream *) safemalloc (sizeof (struct upstream));
@@ -99,26 +131,10 @@ static struct upstream *upstream_build (const char *host, int port, const char *
                         goto fail;
                 }
 
-                ptr = strchr (domain, '/');
-                if (ptr) {
-                        struct in_addr addrstruct;
-
-                        *ptr = '\0';
-                        if (inet_aton (domain, &addrstruct) != 0) {
-                                up->ip = ntohl (addrstruct.s_addr);
-                                *ptr++ = '/';
-
-                                if (strchr (ptr, '.')) {
-                                        if (inet_aton (ptr, &addrstruct) != 0)
-                                                up->mask =
-                                                    ntohl (addrstruct.s_addr);
-                                } else {
-                                        up->mask =
-                                            ~((1 << (32 - atoi (ptr))) - 1);
-                                }
-                        }
-                } else {
-                        up->domain = safestrdup (domain);
+                if (!upstream_handle_site_spec(up, domain)) {
+                        log_message (LOG_WARNING,
+                                     "Nonsense no-upstream rule: malformed IP address or mask");
+                        goto fail;
                 }
 
                 log_message (LOG_INFO, "Added no-upstream for %s", domain);
@@ -132,7 +148,12 @@ static struct upstream *upstream_build (const char *host, int port, const char *
 
                 up->host = safestrdup (host);
                 up->port = port;
-                up->domain = safestrdup (domain);
+
+                if (!upstream_handle_site_spec(up, domain)) {
+                        log_message (LOG_WARNING,
+                                     "Nonsense upstream rule: malformed IP address or mask");
+                        goto fail;
+                }
 
                 log_message (LOG_INFO, "Added upstream %s %s:%d for %s",
                              proxy_type_name(type), host, port, domain);
